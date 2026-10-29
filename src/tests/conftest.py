@@ -1,21 +1,16 @@
 import pytest
 from httpx import AsyncClient, ASGITransport
-from src.app.main import app
+from src.app.main import app, request_counts
 from src.app.services import db_store, idempotency_store, reset_process_pool, queue, heavy_inference_worker
 
 @pytest.fixture(autouse=True)
-def clean_stores():
-    """Clear memory DB states and reset the excecution environment between test runs."""
+def clean_stores_and_pool():
     db_store.clear()
     idempotency_store.clear()
-    
-    # 1. Reset worker process allocations back to normal baseline configurations
+    request_counts.clear()
     queue.worker_function = heavy_inference_worker
     queue.is_connected = True
-    
-    # 2. Re-instantiate the ProcessPoolExecutor to heal any crashes from case 15
-    reset_process_pool()
-    
+    reset_process_pool()    
 
 @pytest.fixture
 async def client():

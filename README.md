@@ -1,51 +1,132 @@
-# ML Workload Execution Platform
+# Asynchronous ML Workload Processing Platform
 
-An asynchronous FastAPI engine designed to handle heavy ML/Computer Vision inference pipelines (e.g., YOLOv8) without blocking incoming API routing loops.
-
-## 🚀 Getting Started
-
-### 1. Initialize Virtual Environment & Dependencies
-```bash
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-pip install fastapi[standard] pytest pytest-asyncio httpx pytest-mock
-```
-
-### 2. Launch Local Server
-```bash
-fastapi dev src/app/main.py
-```
-
-### 3. Run Asynchronous Test Suite
-```bash
-pytest
-```
+Production-oriented asynchronous FastAPI platform for offloading long-running machine learning inference workloads — such as Ultralytics YOLOv8 and Qwen2.5-VL — to isolated worker processes. The platform separates fast client-facing API operations from background processing to avoid latency regressions in the request path.
 
 ---
 
-## 🧪 Test Cases Matrix
+## 🏗️ Architectural Testing Strategy
 
-The platform incorporates a 15-case test suite to ensure robust handling across all positive execution loops, negative input states, and infrastructure failures:
+The validation suite is organised into four lifecycle groups, balancing fast feedback, integration coverage, resilience and release readiness.
 
-| # | Scenario | Input | Expectation | Verification | CI |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Positive Scenarios** | | | | | |
-| 1 | Successful workload creation | Valid JSON (all fields provided) | 202 Accepted | Response contains a valid `task_id` (UUIDv4 format) and `status="accepted"`. | **Yes** |
-| 2 | Omission of optional `params` field | JSON payload missing the `"params"` block entirely | 202 Accepted | API handles default internal parameters safely; task is initialized. | **Yes** |
-| 3 | Query existing workload status | `GET /workloads/{task_id}` for a valid active ID | 200 OK | Response contains matching `task_id` and an allowed enum status (e.g., `running`). | **Yes** |
-| **Negative & Boundary Conditions** | | | | | |
-| 4 | Missing required `model` field | JSON payload missing `"model"` key | 422 Unprocessable | Response body contains clean validation error context pinpointing the field. | **Yes** |
-| 5 | Unsupported model architecture type | `"model": "non-existent-vlm-model-999"` | 422 Unprocessable | Request rejected by schema validator before spawning process/queue tasks. | **Yes** |
-| 6 | Upper boundary for `confidence` parameter | `"confidence": 1.01` in params | 422 Unprocessable | Request rejected by schema validator before spawning process/queue tasks. | **Yes** |
-| 7 | Zero value boundary for `max_frames` | `"max_frames": 0` or `-1` | 422 Unprocessable | Enforces positive integers for frame constraints via structural schema validation. | **Yes** |
-| 8 | Invalid string URI format | `"input_uri": "not-a-valid-uri"` | 422 Unprocessable | Rejects input string that fails basic pattern validation rules for target storages. | **Yes** |
-| **Idempotency** | | | | | |
-| 9 | Repeated request with identical idempotency key | Identical payload and same `"idempotency_key"` | 202 Accepted | Returns the exact original `task_id` and does not spawn duplicate worker processing. | **Yes** |
-| 10 | Concurrent identical requests | Two identical requests sent at the exact same millisecond | 202 Accepted | First call creates task; second call gracefully resolves to the same ID using safe async locking. | **Yes** |
-| **Authorization** | | | | | |
-| 11 | Request without Authentication Token | Valid JSON payload but missing `Authorization` header | 401 Unauthorized | Access blocked instantly before any routing logic triggers. | **Yes** |
-| 12 | Token with expired or restricted scopes | Valid JSON payload but token lacks workload permissions | 403 Forbidden | Request blocked due to role/scope mismatch. | **Yes** |
-| **Infrastructure & Downstream Failures** | | | | | |
-| 13 | Unreachable Queue Infrastructure | Valid JSON payload but backing Broker (Redis/Rabbit) is offline | 503 Service Unavail. | API safely handles network timeouts from queue and does not drop task silently. | **Yes** |
-| 14 | Missing S3 Object Storage File Source | Valid payload layout but target video URI does not exist in bucket | 202 then `failed` | Task starts as `accepted` but updates state asynchronously to `failed` upon lookup check. | **Yes** |
-| 15 | Worker process node crashes mid-inference | Active workload running inside `ProcessPoolExecutor` gets `SIGKILL` | State: `failed` | Status transitions cleanly to `failed` with error metrics, avoiding a permanent hung state. | **Yes** |
+### 1. Fast CI
+
+**Objective:** provide fast feedback on every commit and pull request.
+
+**Scope:**
+- Request/response schema validation.
+- Serialisation and deserialisation rules.
+- Authentication and authorisation checks.
+- Positive and negative API scenarios.
+- Idempotency contract checks.
+- Basic task lifecycle transitions.
+
+**Requirements:** tests are isolated from real external systems and use in-memory fakes or lightweight stubs for queue, database, object storage and inference worker dependencies.
+
+### 2. Nightly Integration
+
+**Objective:** verify behaviour in a realistic multi-component environment.
+
+**Scope:**
+- API + PostgreSQL + message broker + object storage + worker integration.
+- Concurrent workload creation and idempotency under parallel requests.
+- Task lifecycle transitions across services.
+- Migration and configuration compatibility checks.
+- Regression scenarios on a fixed dataset.
+
+**Requirements:** Docker Compose or testcontainers-based environment; scheduled runs to avoid slowing down pull-request pipelines.
+
+### 3. Fault Injection
+
+**Objective:** verify graceful degradation and recovery behaviour.
+
+**Scope:**
+- Message broker unavailability.
+- Database connection failures.
+- Object storage errors, including missing input artifacts.
+- Worker crash or termination during task processing.
+- Queue backlog, retries, dead-letter handling and task timeout behaviour.
+
+**Expected behaviour:** no task remains permanently in `running`; failures are recorded with machine-readable error codes, metrics and logs; retry and recovery policies are applied where applicable.
+
+### 4. Performance Gates
+
+**Objective:** validate latency, throughput and resource behaviour before rollout.
+
+**Scope:**
+- API latency percentiles: p50, p95, p99.
+- Throughput under expected and peak load.
+- Worker queue depth and processing time.
+- CPU, memory and GPU/NPU resource consumption.
+- Rate-limiting behaviour and `Retry-After` semantics.
+
+**Requirements:** performance tests run against a controlled environment with a fixed workload profile and are compared against agreed SLO baselines.
+
+---
+
+## 🤝 MLOps Contract Testing Framework
+
+The MLOps pipeline enforces contracts across three layers to prevent incompatible changes from reaching production:
+
+```text
+[ MLOps Pipeline Levels ]
+│
+├──────────────────────────────┼──────────────────────────────┼──────────────────────────────┐
+▼                              ▼                              ▼                              
+1. Data Contracts              2. Model Artifact Contracts    3. Serving API Contracts       
+(Pandera / Great Expectations) (MLflow Registry)              (OpenAPI / Pact / CDC)         
+├── Feature schemas            ├── Input/output signatures    ├── JSON payload structures    
+├── Types and required fields  ├── Tensor shapes and dtypes   ├── HTTP/gRPC status codes     
+├── Value boundaries           ├── Serialisation and loading  ├── Machine-readable errors    
+└── Data drift [alert]         └── Quality floor              └── Latency/SLO gate [canary]  
+```
+
+### 1. Data Contracts — Data-to-Pipeline Layer
+
+**Feature schema compliance:** validates column names, data types, required fields, uniqueness constraints and allowed value ranges. Critical schema violations block pipeline execution.
+
+**Data quality checks:** detect missing values, `NaN`/`Inf` values, invalid categorical values, duplicate keys and out-of-range numerical features.
+
+**Data drift monitoring:** compares production or incoming data distributions with a training baseline. Moderate drift produces alerts and metrics for investigation or retraining; it does not necessarily block a release. Critical schema drift or severe quality degradation can block deployment.
+
+### 2. Model Artifact Contracts — Pipeline-to-Registry Layer
+
+**Model signature alignment:** verifies input and output names, tensor shapes, data types and expected batch dimensions.
+
+**Serialisation integrity:** verifies that a model artifact — for example `.onnx`, `.pt` or TorchScript — can be loaded and executed by the target runtime, such as ONNX Runtime, TensorRT or Triton Inference Server.
+
+**Quality floor verification:** evaluates a candidate model on a fixed golden dataset and compares key metrics — for example mAP, precision, recall, F1 or ROC-AUC — against a minimum threshold or the current production baseline.
+
+### 3. Serving API Contracts — Model-Serving-to-Client Layer
+
+**Schema validation:** OpenAPI/Pydantic validation with `extra="forbid"` prevents unknown fields and silent misconfiguration.
+
+**Machine-readable errors:** all expected failures return a consistent error structure with a stable `code`, human-readable message, field details where applicable, and `trace_id`.
+
+**Performance and SLO gates:** latency, throughput and error-rate thresholds are validated during performance testing and canary rollout. A violation can stop a rollout or trigger rollback.
+
+---
+
+## 🧪 Comprehensive Evaluation Matrix
+
+| Group | # | Scenario | Input | Expected HTTP status | Verification | CI execution |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Fast CI** | 1 | Successful workload creation | Valid JSON payload | `202` | Response contains a valid `task_id` and `status="accepted"` | Commit |
+| **Fast CI** | 2 | Optional parameters omitted | Payload without `params` | `202` | Default parameters are applied: `confidence=0.35`, `max_frames=1000` | Commit |
+| **Fast CI** | 3 | Query existing workload status | Valid active `task_id` | `200` | Response contains a valid lifecycle status | Commit |
+| **Fast CI** | 4 | Query non-existent task | Unknown `task_id` | `404` | Error contains `code="TASK_NOT_FOUND"` and `trace_id` | Commit |
+| **Fast CI** | 5 | Missing required `model` field | Payload without `model` | `422` | Validation error identifies the `model` field | Commit |
+| **Fast CI** | 6 | Unsupported model | `model="unknown"` | `422` | Error contains `code="MODEL_NOT_SUPPORTED"` | Commit |
+| **Fast CI** | 7 | Invalid confidence value | `confidence=1.01` | `422` | Rejected before enqueueing; error identifies `params.confidence` | Commit |
+| **Fast CI** | 8 | Invalid frame limit | `max_frames=0` | `422` | Rejected before enqueueing; positive integer required | Commit |
+| **Fast CI** | 9 | Malformed input URI | `input_uri="not-a-uri"` | `422` | URI validation error returned | Commit |
+| **Fast CI** | 10 | Repeated request with same idempotency key | Same payload and `idempotency_key` | `202` | Same original `task_id` returned; no duplicate task created | Commit |
+| **Fast CI** | 11 | Same idempotency key, different payload | Same key, modified payload | `409` | Error contains `code="IDEMPOTENCY_KEY_CONFLICT"` | Commit |
+| **Fast CI** | 13 | Request without authentication | No `Authorization` header | `401` | Request rejected before business logic | Commit |
+| **Fast CI** | 14 | Insufficient permissions | Token without required scope | `403` | Error contains `code="INSUFFICIENT_PERMISSIONS"` | Commit |
+| **Fast CI** | 17 | Missing input artifact | Valid payload, non-existent storage object | `202` then `failed` | Asynchronous worker marks task as failed with `code="INPUT_NOT_FOUND"` | Commit |
+| **Fast CI** | 19 | Successful workload completion | Valid workload processed by worker | `200` for status request | Task status becomes `completed`; result metadata/artifacts are available | Commit |
+| **Nightly** | 12 | Concurrent identical requests | Two identical requests with the same idempotency key | `202` | Both requests return the same `task_id`; exactly one task is created | Nightly |
+| **Fault** | 16 | Message broker outage | Valid payload, broker unavailable | `503` | Error contains `code="BROKER_UNAVAILABLE"`; `broker_unavailable_total` metric is incremented | Fault injection |
+| **Fault** | 18 | Worker crash during processing | Worker process terminated mid-task | Task leaves `running` | Retry policy is applied; after retries are exhausted, task becomes `failed`; no permanently hung task | Fault injection |
+| **Performance** | 15 | Rate limit exceeded | Client exceeds request threshold | `429` | Response includes `Retry-After`; no task is created | Performance |
+| **Fault / Lifecycle** | 20 | Workload cancellation | `DELETE /workloads/{task_id}` during processing | `202` | Cancellation accepted; task transitions to `cancelled`; worker does not publish a completed result | Fault injection |
