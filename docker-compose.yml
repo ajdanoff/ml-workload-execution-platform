@@ -137,32 +137,32 @@ services:
     networks:
       - ml_network
 
-# Add this service to your docker-compose.yml file
-test_runner:
-  build:
-    context: .
-    dockerfile: Dockerfile
-  command: ["pytest", "-v", "-s"]
-  environment:
-    APP_ENV: test
-    DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-    REDIS_URL: redis://redis:6379/0
-    RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
-    S3_ENDPOINT_URL: http://minio:9000
-    S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
-    S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
-    USE_FAKE_MODEL: "true"
-  depends_on:
-    migrate:
-      condition: service_completed_successfully
-    rabbitmq:
-      condition: service_healthy
-    redis:
-      condition: service_healthy
-    minio:
-      condition: service_healthy
-  networks:
-    - ml_network
+# FIX: Ensure 'test_runner' has exactly 2 spaces of indentation
+  test_runner:  
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["pytest", "-v", "-s"]
+    environment:
+      APP_ENV: test
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      USE_FAKE_MODEL: "true"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - ml_network
 
 volumes:
   pgdata:
