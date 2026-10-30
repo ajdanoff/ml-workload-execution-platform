@@ -41,7 +41,8 @@ async def run_migrations():
     
     async with engine.begin() as conn:
         logger.info("Creating relational table architectures...")
-        await conn.run_sync(Base.metadata.create_base_all)
+        # FIX: Changed from create_base_all to create_all
+        await conn.run_sync(Base.metadata.create_all)
     
     logger.info("Database schemas fully synced. Step complete.")
     await engine.dispose()
