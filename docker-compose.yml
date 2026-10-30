@@ -1,6 +1,9 @@
+version: '3.8'
+
 services:
   postgres:
     image: postgres:16-alpine
+    container_name: ml_platform_postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -15,22 +18,9 @@ services:
     networks:
       - ml_network
 
-  migrate:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: ["python", "-m", "src.app.migrations"]
-    environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: "no"
-    networks:
-      - ml_network
-
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
+    container_name: ml_platform_rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
@@ -46,6 +36,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    container_name: ml_platform_redis
     command: ["redis-server", "--appendonly", "no"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -56,8 +47,8 @@ services:
       - ml_network
 
   minio:
-    # Swapped from the deleted minio/minio image to a trusted drop-in mirror
     image: coollabsio/minio:latest
+    container_name: ml_platform_minio
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
@@ -72,11 +63,11 @@ services:
     networks:
       - ml_network
 
-
   api:
     build:
       context: .
       dockerfile: Dockerfile
+    container_name: ml_platform_api
     environment:
       APP_ENV: test
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
@@ -86,8 +77,8 @@ services:
       S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
       S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
     depends_on:
-      migrate:
-        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
       rabbitmq:
         condition: service_healthy
       redis:
@@ -103,14 +94,15 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    container_name: ml_platform_outbox_publisher
     command: ["python", "-m", "src.app.outbox_relay"]
     environment:
       APP_ENV: test
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
     depends_on:
-      migrate:
-        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
       rabbitmq:
         condition: service_healthy
     networks:
@@ -120,6 +112,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    container_name: ml_platform_worker
     command: ["python", "-m", "src.app.worker"]
     environment:
       APP_ENV: test
@@ -130,8 +123,8 @@ services:
       S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
       USE_FAKE_MODEL: "true"
     depends_on:
-      migrate:
-        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
       rabbitmq:
         condition: service_healthy
       minio:
@@ -139,11 +132,11 @@ services:
     networks:
       - ml_network
 
-# FIX: Ensure 'test_runner' has exactly 2 spaces of indentation
-  test_runner:  
+  test_runner:
     build:
       context: .
       dockerfile: Dockerfile
+    container_name: ml_platform_test_runner
     command: ["pytest", "-v", "-s"]
     environment:
       APP_ENV: test
@@ -155,8 +148,8 @@ services:
       S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
       USE_FAKE_MODEL: "true"
     depends_on:
-      migrate:
-        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
       rabbitmq:
         condition: service_healthy
       redis:

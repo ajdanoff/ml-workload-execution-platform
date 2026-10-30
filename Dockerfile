@@ -23,25 +23,24 @@ FROM python:3.10-slim AS runner
 
 WORKDIR /workspace
 
-# Copy installed site-packages and binary executable tools cleanly from the builder layer
 COPY --from=builder /build/deps /usr/local/lib/python3.10/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
-# 3. Copy source code and config blueprints into working directory paths
 COPY src/ ./src/
 COPY pytest.ini ./
+# Copy our wrapper script path over
+COPY entrypoint.sh ./ 
 
-# Set environment paths to optimize Python runtime runtime behaviors
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/workspace/src
 
-# Create a non-privileged system user for runtime application execution security
 RUN useradd -u 8888 appuser && chown -R appuser:appuser /workspace
 USER appuser
 
-# Expose standard production communication port
 EXPOSE 8000
 
-# Run production-ready Uvicorn server matching your application package layouts
+# Tell Docker to always process scripts through the entrypoint script
+ENTRYPOINT ["./entrypoint.sh"]
+
 CMD ["uvicorn", "src.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
