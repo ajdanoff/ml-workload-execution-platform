@@ -1,9 +1,19 @@
 #!/bin/bash
 set -e
 
-# Automatically run the migrations block script 
 echo "Executing database migrations..."
 python -m src.app.migrations
 
-# Execute whatever command was passed via CMD (e.g. uvicorn, pytest, worker loop)
-exec "$@"
+# Fix: Intercept binary calls and route them safely through the python module runtime wrapper
+if [ "$1" = "uvicorn" ]; then
+    echo "Starting FastAPI Server via Python Module context..."
+    shift
+    exec python -m uvicorn "$@"
+elif [ "$1" = "pytest" ]; then
+    echo "Starting Pytest Suite via Python Module context..."
+    shift
+    exec python -m pytest "$@"
+else
+    # Keep standard execution for direct worker loops
+    exec "$@"
+fi
