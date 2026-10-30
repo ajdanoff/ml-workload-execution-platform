@@ -7,28 +7,38 @@ on:
     branches: [ main ]
 
 jobs:
-  test:
+  container-testing:
     runs-on: ubuntu-latest
-  
-    steps:
-    # 1. check-out the repository code
-    - name: Checkout code
-      uses: actions/checkout@v4
-  
-    # 2. set up python environment matching your target execution environment
-    - name: Set up Python 3.10
-      uses: actions/setup-python@v5
-      with:
-        python-key: '3.10'
-        cache: 'pip' # automatically caches downloaded wheels to speed up future pipeline runs
 
-    # 3. install core framework requirements along with test execution dependencies
-    - name: Install Dependencies
+    steps:
+    # 1. Pull the codebase down to the runner instance
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    # 2. Automatically generate the localized injection environment configurations
+    - name: Set up Environment Variables
       run: |
-        python -m pip install --upgrade pip
-        pip install fastapi\[standard\] pytest pytest-asyncio httpx pytest-mock
-    
-    # 4. execute the complete asynchronous test suite matrix
-    - name: Run Pytest Suite
+        echo "POSTGRES_USER=ml_admin" >> .env
+        echo "POSTGRES_PASSWORD=ml_secure_password" >> .env
+        echo "POSTGRES_DB=ml_workloads_db" >> .env
+        echo "RABBITMQ_USER=mq_admin" >> .env
+        echo "RABBITMQ_PASSWORD=mq_secure_password" >> .env
+        echo "MINIO_ROOT_USER=minio_admin" >> .env
+        echo "MINIO_ROOT_PASSWORD=minio_secure_password" >> .env
+
+    # 3. Cache Docker layers to accelerate recurring build times
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    # 4. Spin up the complete infrastructure matrix and catch pytest results
+    - name: Run Tests Inside Container Architecture
       run: |
-        pytest -v -s
+        # Use '--exit-code-from' to force compose to return the exit code of the test container.
+        # If any pytest scenario fails, the entire CI workflow step will fail.
+        docker compose up --build --exit-code-from test_runner
+
+    # 5. Clean up local container allocations
+    - name: Tear Down Stack
+      if: always()
+      run: |
+        docker compose down -v

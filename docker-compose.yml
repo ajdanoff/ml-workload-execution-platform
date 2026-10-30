@@ -1,144 +1,135 @@
-version: '3.8'
-
 services:
-  # 1. Primary Database State Store & Transactional Outbox Table
   postgres:
-    image: postgres:15-alpine
-    container_name: ml_platform_postgres
+    image: postgres:16-alpine
     environment:
-      POSTGRES_USER: ml_admin
-      POSTGRES_PASSWORD: ml_secure_password
-      POSTGRES_DB: ml_workloads_db
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ml_admin -d ml_workloads_db"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
     networks:
       - ml_network
 
-  # 2. Resilient Task Queue Broker (RabbitMQ Quorum Queues)
-  rabbitmq:
-    image: rabbitmq:3.12-management-alpine
-    container_name: ml_platform_rabbitmq
-    ports:
-      - "5672:5672"   # AMQP protocol port
-      - "15672:15672" # Management UI dashboard port
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "src.app.migrations"]
     environment:
-      RABBITMQ_DEFAULT_USER: mq_admin
-      RABBITMQ_DEFAULT_PASS: mq_secure_password
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - ml_network
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 10
     networks:
       - ml_network
 
-  # 3. High-Speed Idempotency Locks & Rate Limit Caching Layer
   redis:
     image: redis:7-alpine
-    container_name: ml_platform_redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
+    command: ["redis-server", "--appendonly", "no"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
-      retries: 3
+      retries: 10
     networks:
       - ml_network
 
-  # 4. Local Object Storage Cluster (S3 API Compliant Clone)
   minio:
-    image: minio/minio:RELEASE.2024-01-11T04-46-32Z
-    container_name: ml_platform_minio
-    ports:
-      - "9000:9000"   # S3 API Endpoint communication port
-      - "9001:9001"   # Web Console dashboard port
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: minio_admin
-      MINIO_ROOT_PASSWORD: minio_secure_password
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     volumes:
       - minio_data:/data
-    command: server /data --console-address ":9001"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 5s
       timeout: 3s
-      retries: 3
+      retries: 10
     networks:
       - ml_network
 
-  # 5. Client-Facing Serving API
   api:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: ml_platform_api
-    ports:
-      - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://ml_admin:ml_secure_password@postgres:5432/ml_workloads_db
-      - REDIS_URL=redis://redis:6379/0
-      - RABBITMQ_URL=amqp://mq_admin:mq_secure_password@rabbitmq:5672/
-      - S3_ENDPOINT_URL=http://minio:9000
-      - AWS_ACCESS_KEY_ID=minio_admin
-      - AWS_SECRET_ACCESS_KEY=minio_secure_password
-      - ENV=production
+      APP_ENV: test
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
     depends_on:
-      postgres:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
         condition: service_healthy
       redis:
         condition: service_healthy
       minio:
         condition: service_healthy
+    ports:
+      - "8000:8000"
     networks:
       - ml_network
 
-  # 6. Outbox Relay / Publisher Service
   outbox_publisher:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: ml_platform_outbox_publisher
-    command: ["python", "-m", "app.outbox_relay"]
+    command: ["python", "-m", "src.app.outbox_relay"]
     environment:
-      - DATABASE_URL=postgresql://ml_admin:ml_secure_password@postgres:5432/ml_workloads_db
-      - RABBITMQ_URL=amqp://mq_admin:mq_secure_password@rabbitmq:5672/
+      APP_ENV: test
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       rabbitmq:
         condition: service_healthy
     networks:
       - ml_network
 
-  # 7. Decoupled Multi-Process Inference Consumer Node
   inference_worker:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: ml_platform_worker
-    command: ["python", "-m", "app.worker"]
+    command: ["python", "-m", "src.app.worker"]
     environment:
-      - DATABASE_URL=postgresql://ml_admin:ml_secure_password@postgres:5432/ml_workloads_db
-      - RABBITMQ_URL=amqp://mq_admin:mq_secure_password@rabbitmq:5672/
-      - S3_ENDPOINT_URL=http://minio:9000
-      - AWS_ACCESS_KEY_ID=minio_admin
-      - AWS_SECRET_ACCESS_KEY=minio_secure_password
-      - NVIDIA_VISIBLE_DEVICES=all
+      APP_ENV: test
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      USE_FAKE_MODEL: "true"
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       rabbitmq:
         condition: service_healthy
       minio:
@@ -146,10 +137,36 @@ services:
     networks:
       - ml_network
 
+# Add this service to your docker-compose.yml file
+test_runner:
+  build:
+    context: .
+    dockerfile: Dockerfile
+  command: ["pytest", "-v", "-s"]
+  environment:
+    APP_ENV: test
+    DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    REDIS_URL: redis://redis:6379/0
+    RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+    S3_ENDPOINT_URL: http://minio:9000
+    S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+    S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+    USE_FAKE_MODEL: "true"
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    rabbitmq:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    minio:
+      condition: service_healthy
+  networks:
+    - ml_network
+
 volumes:
   pgdata:
   rabbitmq_data:
-  redis_data:
   minio_data:
 
 networks:
