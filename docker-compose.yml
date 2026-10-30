@@ -56,7 +56,8 @@ services:
       - ml_network
 
   minio:
-    image: minio/minio:latest
+    # Swapped from the deleted minio/minio image to a trusted drop-in mirror
+    image: coollabsio/minio:latest
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
@@ -70,6 +71,7 @@ services:
       retries: 10
     networks:
       - ml_network
+
 
   api:
     build:
