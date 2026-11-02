@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import sqlalchemy as sa  # <--- FIX: Added explicit SQLAlchemy namespace binding import
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 from sqlalchemy import Column, String, JSON, Integer, DateTime, func
@@ -12,8 +13,8 @@ logger = logging.getLogger(__name__)
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://ml_admin:ml_secure_password@postgres:5432/ml_workloads_db")
 APP_ENV = os.getenv("APP_ENV", "production")
 
-engine = None
-async_session = None
+engine = create_async_engine(DATABASE_URL, echo=False)
+async_session = async_sessionmaker(engine, expire_on_commit=False)
 
 def init_db_pool(url: str = DATABASE_URL):
     """Dynamically binds connection pools, disabling caching if running in a test context."""
@@ -49,13 +50,29 @@ class OutboxEvent(Base):
     processed = Column(Integer, default=0, nullable=False, index=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
 
+# src/app/migrations.py
 async def run_migrations():
     logger.info("Initializing connection to database engine...")
     global engine
+    
+    # Unique application identifier key for our distributed lock
+    MIGRATION_LOCK_ID = 88888888
+    
+    # engine.begin() opens a single connection and starts a transaction atomically
     async with engine.begin() as conn:
-        logger.info("Creating relational table architectures...")
-        await conn.run_sync(Base.metadata.create_all)
-    logger.info("Database schemas fully synced. Step complete.")
-
+        logger.info("Acquiring transactional advisory lock for schema migration...")
+        # 1. Acquire the lock inside the active connection context
+        await conn.execute(sa.text(f"SELECT pg_advisory_lock({MIGRATION_LOCK_ID})"))
+        
+        try:
+            logger.info("Creating relational table architectures...")
+            # 2. Run the table synchronization safely within the lock window
+            await conn.run_sync(Base.metadata.create_all)
+            logger.info("Database schemas fully synced. Step complete.")
+        finally:
+            # 3. Always release the lock to free trailing container services
+            logger.info("Releasing migration advisory lock.")
+            await conn.execute(sa.text(f"SELECT pg_advisory_unlock({MIGRATION_LOCK_ID})"))
+            
 if __name__ == "__main__":
     asyncio.run(run_migrations())
