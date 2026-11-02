@@ -115,7 +115,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: ml_platform_worker
+    # container_name: ml_platform_worker
     command: ["python", "-m", "src.app.worker"]
     environment:
       - APP_ENV=test
