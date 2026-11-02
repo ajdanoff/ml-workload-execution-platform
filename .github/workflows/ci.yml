@@ -35,7 +35,8 @@ jobs:
       run: |
         # Use '--exit-code-from' to force compose to return the exit code of the test container.
         # If any pytest scenario fails, the entire CI workflow step will fail.
-        docker compose up --build --exit-code-from test_runner
+        # Use --scale inference_worker=2 to spin up a redundant backup worker node
+        docker compose up --build --scale inference_worker=2 --exit-code-from test_runner
 
     # 5. Clean up local container allocations
     - name: Tear Down Stack
