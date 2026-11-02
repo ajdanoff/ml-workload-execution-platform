@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 DB_URL = os.getenv("DATABASE_URL")
 RMQ_URL = os.getenv("RABBITMQ_URL")
 
+# src/app/worker.py (Inside process_task function)
 async def process_task(payload: dict):
     task_id = payload.get("task_id") or payload.get("idempotency_key")
     uri = payload.get("input_uri", "")
@@ -27,6 +28,7 @@ async def process_task(payload: dict):
         logger.warning(f"Chaos trigger detected: Simulating missing S3 storage for task {task_id}")
         async with async_session() as session:
             async with session.begin():
+                from src.app.migrations import Workload
                 stmt = update(Workload).where(Workload.task_id == task_id).values(
                     status="failed",
                     result={"error": "INPUT_NOT_FOUND: S3 Object not found in bucket"}
@@ -36,13 +38,22 @@ async def process_task(payload: dict):
 
     # ➔ Scenario B: Cross-container Worker Process SIGKILL Crash Trigger Check
     if "suicidal-crash" in str(uri):
-        logger.warning(f"Chaos trigger detected: Simulating brutal OS SIGKILL crash for task {task_id}")
-        os.kill(os.getpid(), signal.SIGKILL)
-        return
+        crash_marker = "/tmp/worker_crashed_once"
+        if not os.path.exists(crash_marker):
+            logger.warning(f"Chaos trigger detected: Simulating brutal OS SIGKILL crash for task {task_id}")
+            # Create a shared file marker. Since Docker Compose mounts named volumes or handles
+            # restarts, we can write a local execution trace to coordinate single-shot suicides.
+            with open(crash_marker, "w") as f:
+                f.write("killed")
+            os.kill(os.getpid(), signal.SIGKILL)
+            return
+        else:
+            logger.info(f"Recovered redelivery sequence detected for task {task_id}. Proceeding with processing...")
 
     # Standard Successful Processing Path
     async with async_session() as session:
         async with session.begin():
+            from src.app.migrations import Workload
             stmt = update(Workload).where(Workload.task_id == task_id).values(status="running")
             await session.execute(stmt)
 
@@ -50,6 +61,7 @@ async def process_task(payload: dict):
 
     async with async_session() as session:
         async with session.begin():
+            from src.app.migrations import Workload
             mock_result = {
                 "detected_objects_count": 42,
                 "metrics": {"latency_ms": 110},
