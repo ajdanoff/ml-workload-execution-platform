@@ -117,6 +117,9 @@ services:
       dockerfile: Dockerfile
     # container_name: ml_platform_worker
     command: ["python", "-m", "src.app.worker"]
+    deploy:
+      replicas: 2
+    restart: unless-stopped
     environment:
       - APP_ENV=test
       - PYTHONPATH=/workspace

@@ -1,8 +1,10 @@
 import asyncio
 import pytest
+import logging
 from src.app.services import queue, broken_s3_inference_worker, suicidal_inference_worker
 from src.app.migrations import async_session, Workload, OutboxEvent
 from src.app.main import request_counts
+
 
 # Helper header block dictionary matching standard security middleware requirements
 AUTH_HEADERS = {"Authorization": "Bearer valid-token"}
@@ -264,13 +266,14 @@ async def test_case_17_s3_object_missing_async_failure(client, payload):
     assert status_body["status"] == "failed"
     assert "INPUT_NOT_FOUND" in status_body["result"]["error"]
 
+# In src/tests/test_workloads.py (Case 18)
 @pytest.mark.infrastructure
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [
     {
         "idempotency_key": "infra-key-1818",
         "model": "yolov8s",
-        "input_uri": "https://amazonaws.com/suicidal-crash" # Chaos trigger text
+        "input_uri": "https://amazonaws.com/suicidal-crash" 
     }
 ])
 async def test_case_18_worker_process_node_crashes_mid_inference(client, payload):
@@ -279,13 +282,11 @@ async def test_case_18_worker_process_node_crashes_mid_inference(client, payload
     task_id = response.json()["task_id"]
     
     status_body = {}
-    for _ in range(30):
-        await asyncio.sleep(0.1)
+    # Extended polling configuration to allow the backup container to finish processing
+    for _ in range(180):
+        await asyncio.sleep(0.5)
         res = await client.get(f"/workloads/{task_id}", headers=AUTH_HEADERS)
         status_body = res.json()
-        # RabbitMQ's manual acknowledgment loop will re-queue the task when the worker dies.
-        # Because our fake-model is stateless, a fresh worker will pick it up and process it.
-        # Thus, we verify the task safely recovers and finishes as 'completed'.
         if status_body.get("status") == "completed":
             break
             

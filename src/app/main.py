@@ -222,6 +222,10 @@ async def create_workload(payload: dict, fastapi_request: Request, token: str = 
 @app.get("/workloads/{task_id}")
 async def get_workload(task_id: str, token: str = Depends(verify_auth_token)):
     async with async_session() as session:
+        # FIX: Evicts memory-mapped objects from the current identity pool,
+        # forcing an explicit SQL network query to fetch live rows from PostgreSQL
+        session.expire_all() 
+        
         stmt = select(Workload).where(Workload.task_id == task_id)
         result = await session.execute(stmt)
         task = result.scalar_one_or_none()
@@ -230,7 +234,6 @@ async def get_workload(task_id: str, token: str = Depends(verify_auth_token)):
             return JSONResponse(status_code=404, content={"code": "TASK_NOT_FOUND"})
             
         return {"task_id": task.task_id, "status": task.status, "result": task.result}
-
 
 @app.delete("/workloads/{task_id}", status_code=202)
 async def cancel_workload(task_id: str, token: str = Depends(verify_auth_token)):
