@@ -7,3 +7,4 @@ sqlalchemy[asyncio]>=2.0.30
 asyncpg>=0.29.0
 aio-pika>=9.4.0
 pydantic[email]>=2.7.0
+clickhouse-connect>=0.7.0

@@ -4,6 +4,9 @@ set -e
 echo "Executing database migrations..."
 python -m src.app.migrations
 
+echo "Executing clickhouse initialization..."
+python -m src.app.clickhouse_init
+
 # Fix: Intercept binary calls and route them safely through the python module runtime wrapper
 if [ "$1" = "uvicorn" ]; then
     echo "Starting FastAPI Server via Python Module context..."

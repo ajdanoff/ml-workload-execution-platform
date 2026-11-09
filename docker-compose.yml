@@ -64,6 +64,27 @@ services:
     networks:
       - ml_network
 
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3-alpine
+    container_name: ml_platform_clickhouse
+    ports:
+      - "8123:8123" # HTTP API Communication port (used by drivers)
+      - "9000:9000" # Native TCP client port
+    environment:
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-ch_admin}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-ch_secure_password}
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB:-ml_telemetry_db}
+    volumes:
+      - chdata:/var/lib/clickhouse
+    healthcheck:
+      # Native HTTP ping endpoint validation to verify instance liveness
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - ml_network
+
   api:
     build:
       context: .
@@ -87,6 +108,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_started
+      clickhouse:
+        condition: service_healthy
     ports:
       - "8000:8000"
     networks:
@@ -136,6 +159,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_started
+      clickhouse:
+        condition: service_healthy
     networks:
       - ml_network
 
@@ -164,6 +189,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_started
+      clickhouse:
+        condition: service_healthy
     networks:
       - ml_network
 

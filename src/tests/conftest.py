@@ -1,4 +1,5 @@
 import pytest
+import clickhouse_connect
 from httpx import AsyncClient, ASGITransport
 from src.app.main import app, idempotency_store, request_counts
 from src.app.migrations import init_db_pool, engine, Workload, OutboxEvent
@@ -20,6 +21,10 @@ async def clean_database_and_services():
     request_counts.clear()
     queue.worker_function = heavy_inference_worker
     queue.is_connected = True
+    
+    # 4. Clean out ClickHouse analytics tables completely offline
+    ch_client = clickhouse_connect.get_client(host="clickhouse", port=8123, username="ch_admin", password="ch_secure_password", database="ml_telemetry_db")
+    ch_client.command("TRUNCATE TABLE IF EXISTS inference_logs")
     
     yield
     
