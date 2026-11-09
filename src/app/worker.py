@@ -13,82 +13,77 @@ logger = logging.getLogger(__name__)
 DB_URL = os.getenv("DATABASE_URL")
 RMQ_URL = os.getenv("RABBITMQ_URL")
 
+# In src/app/worker.py
+from src.app.telemetry import log_inference_telemetry # Import our new analytical writer
+
 async def process_task(payload: dict, message: aio_pika.IncomingMessage):
     task_id = payload.get("task_id") or payload.get("idempotency_key")
     uri = payload.get("input_uri", "")
-
-    logger.info(
-        "Worker picked up task",
-        extra={
-            "task_id": task_id,
-            "redelivered": message.redelivered,
-            "delivery_tag": message.delivery_tag,
-        },
-    )
+    model = payload.get("model", "unknown")
+    logger.info(f"Worker picked up Task ID: {task_id}. Evaluation parameters...")
 
     init_db_pool()
 
-    if "missing-file" in uri:
-        logger.warning("Chaos trigger: missing S3 object", extra={"task_id": task_id})
-
+    # ➔ Scenario A: Cross-container S3 Missing File Trigger Check
+    if "missing-file" in str(uri):
+        logger.warning(f"Chaos trigger detected: Simulating missing S3 storage for task {task_id}")
         async with async_session() as session:
             async with session.begin():
-                await session.execute(
-                    update(Workload)
-                    .where(Workload.task_id == task_id)
-                    .values(
-                        status="failed",
-                        result={
-                            "error": "INPUT_NOT_FOUND: S3 Object not found in bucket"
-                        },
-                    )
+                from src.app.migrations import Workload
+                stmt = update(Workload).where(Workload.task_id == task_id).values(
+                    status="failed",
+                    result={"error": "INPUT_NOT_FOUND: S3 Object not found in bucket"}
                 )
+                await session.execute(stmt)
+        
+        # 📊 EMIT FAIL TELEMETRY: Record failed processing metrics instantly to ClickHouse
+        await log_inference_telemetry(task_id=task_id, model_name=model, latency_ms=0.0, objects_detected=0, status="failed")
         return
 
-    if "suicidal-crash" in uri and not message.redelivered:
-        logger.warning(
-            "Chaos trigger: simulating SIGKILL before ACK",
-            extra={"task_id": task_id},
-        )
+    # ➔ Scenario B: Native Cross-container Worker SIGKILL Crash Check
+    if "suicidal-crash" in str(uri):
+        if not message.redelivered:
+            logger.warning(f"Chaos trigger detected: Executing instant OS SIGKILL for task {task_id}")
+            # NOTE: We purposefully skip logging to ClickHouse here because a true SIGKILL 
+            # should prevent any code execution, allowing our Watchdog alerts to catch the gap.
+            os.kill(os.getpid(), signal.SIGKILL)
+            return
 
-        # Do not ack. Do not update DB to completed.
-        # Kill the whole worker process.
-        os.kill(os.getpid(), signal.SIGKILL)
+    # Standard Successful Processing Path
+    async with async_session() as session:
+        async with session.begin():
+            from src.app.migrations import Workload
+            stmt = update(Workload).where(Workload.task_id == task_id).values(status="running")
+            await session.execute(stmt)
 
-    if "suicidal-crash" in uri:
-        logger.info(
-            "Redelivered task: continuing normal processing",
-            extra={"task_id": task_id},
-        )
+    # Simulated Weight Ingestion/Inference latency parameters
+    simulated_latency = 110.0
+    simulated_objects_found = 42
+    await asyncio.sleep(0.1) 
 
     async with async_session() as session:
         async with session.begin():
-            await session.execute(
-                update(Workload)
-                .where(Workload.task_id == task_id)
-                .values(status="running")
+            from src.app.migrations import Workload
+            mock_result = {
+                "detected_objects_count": simulated_objects_found,
+                "metrics": {"latency_ms": simulated_latency},
+                "artifact_url": uri
+            }
+            stmt = update(Workload).where(Workload.task_id == task_id).values(
+                status="completed",
+                result=mock_result
             )
-
-    await asyncio.sleep(0.1)
-
-    mock_result = {
-        "detected_objects_count": 42,
-        "metrics": {"latency_ms": 110},
-        "artifact_url": uri,
-    }
-
-    async with async_session() as session:
-        async with session.begin():
-            await session.execute(
-                update(Workload)
-                .where(Workload.task_id == task_id)
-                .values(
-                    status="completed",
-                    result=mock_result,
-                )
-            )
-
-    logger.info("Task completed", extra={"task_id": task_id})
+            await session.execute(stmt)
+            
+    # 📊 EMIT SUCCESS TELEMETRY: Ship analytics logs to ClickHouse outside the state database transaction
+    await log_inference_telemetry(
+        task_id=task_id,
+        model_name=model,
+        latency_ms=simulated_latency,
+        objects_detected=simulated_objects_found,
+        status="success"
+    )
+    logger.info(f"Task {task_id} successfully marked as completed.")
 
 async def main():
     logger.info("Starting background Inference Worker consumer...")
