@@ -66,8 +66,8 @@ services:
     image: clickhouse/clickhouse-server:24.3-alpine
     container_name: ml_platform_clickhouse
     ports:
-      - "8123:8123" # HTTP API Communication port (used by drivers)
-      - "9000:9000" # Native TCP client port
+      - "8123:8123"
+      - "9000:9000"
     environment:
       - CLICKHOUSE_USER=${CLICKHOUSE_USER:-ch_admin}
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-ch_secure_password}
@@ -75,8 +75,9 @@ services:
     volumes:
       - chdata:/var/lib/clickhouse
     healthcheck:
-      # Native HTTP ping endpoint validation to verify instance liveness
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      # FIX: Bypasses curl/wget entirely by using ClickHouse's native internal ping client.
+      # This runs instantly and reliably regardless of container shell constraints or proxy configurations.
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
       interval: 5s
       timeout: 3s
       retries: 10

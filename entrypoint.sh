@@ -46,5 +46,16 @@ echo "====================================================================="
 echo "🚀 Initialization Successful. Handoff to runtime command loop."
 echo "====================================================================="
 
-# Execute whatever runtime loop payload was passed down via Docker CMD directives (e.g. uvicorn, pytest, worker)
-exec "$@"
+# FIX: Intercept binary CLI strings and route them safely through the python module runtime wrapper
+if [ "$1" = "uvicorn" ]; then
+    echo "Starting FastAPI Server via Python Module context..."
+    shift
+    exec python -m uvicorn "$@"
+elif [ "$1" = "pytest" ]; then
+    echo "Starting Pytest Suite via Python Module context..."
+    shift
+    exec python -m pytest "$@"
+else
+    # Keep standard execution for direct worker loops (e.g. python -m src.app.worker)
+    exec "$@"
+fi
